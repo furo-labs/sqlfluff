@@ -33,6 +33,7 @@ _dialect_lookup = {
     "materialize": ("dialect_materialize", "materialize_dialect"),
     "mysql": ("dialect_mysql", "mysql_dialect"),
     "oracle": ("dialect_oracle", "oracle_dialect"),
+    "plsql": ("dialect_plsql", "plsql_dialect"),
     "postgres": ("dialect_postgres", "postgres_dialect"),
     "redshift": ("dialect_redshift", "redshift_dialect"),
     "snowflake": ("dialect_snowflake", "snowflake_dialect"),

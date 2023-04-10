@@ -157,10 +157,18 @@ The dialect for `MySQL`_.
 Oracle
 ------
 
-The dialect for `Oracle`_ SQL. Note: this does not include PL/SQL.
+The dialect for `Oracle SQL`_. Note: this does not include PL/SQL.
 
-.. _`Oracle`: https://www.oracle.com/database/technologies/appdev/sql.html
+.. _`Oracle SQL`: https://www.oracle.com/database/technologies/appdev/sql.html
 
+.. _plsql_dialect_ref:
+
+PL/SQL
+------
+
+The dialect for `Oracle PL/SQL`_. Note: this extends Oracle SQL.
+
+.. _`Oracle PL/SQL`: https://www.oracle.com/database/technologies/appdev/plsql.html
 .. _postgres_dialect_ref:
 
 PostgreSQL
