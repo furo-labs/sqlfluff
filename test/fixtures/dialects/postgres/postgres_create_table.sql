@@ -17,9 +17,9 @@ CREATE TABLE distributors (
      name   varchar(40) NOT NULL CHECK (name <> '')
 );
 
---CREATE TABLE array_int (
---    vector  int[][]
---);
+CREATE TABLE array_int (
+   vector  int[][]
+);
 
 --CREATE TABLE films (
 --    code        char(5),
@@ -33,7 +33,8 @@ CREATE TABLE distributors (
 
 CREATE TABLE distributors (
     did     integer CHECK (did > 100),
-    name    varchar(40)
+    name    varchar(40),
+    long_varying char varying(100)
 );
 
 CREATE TABLE distributors (
@@ -225,12 +226,19 @@ CREATE TABLE users (
     other_id INTEGER REFERENCES groups (group_id) MATCH SIMPLE
 );
 
-CREATE TABLE orders
-(
-id bigint NOT NULL DEFAULT NEXTVAL('orders_id_seq'::regclass),
-constraint_collate_constraints text UNIQUE COLLATE numeric NOT NULL PRIMARY KEY,
-constraints_collate text NOT NULL UNIQUE COLLATE numeric,
-collate_constraints text COLLATE numeric NOT NULL UNIQUE
+CREATE TABLE orders (
+    id bigint NOT NULL DEFAULT NEXTVAL('orders_id_seq'::regclass),
+    constraint_collate_constraints text UNIQUE COLLATE numeric NOT NULL PRIMARY KEY,
+    constraints_collate text NOT NULL UNIQUE COLLATE numeric,
+    collate_constraints text COLLATE numeric NOT NULL UNIQUE,
+    nulls_distinct text UNIQUE NULLS DISTINCT,
+    nulls_not_distinct text UNIQUE NULLS NOT DISTINCT,
+    everything text UNIQUE NULLS DISTINCT WITH (arg1=3, arg5='str')
+        USING INDEX TABLESPACE tblspace COLLATE numeric
+);
+
+CREATE TABLE primary_key_options (
+    everything int PRIMARY KEY WITH (arg1=3, arg5='str') USING INDEX TABLESPACE tblspace NOT NULL
 );
 
 
@@ -248,6 +256,22 @@ CREATE TABLE with_constraints2 (
     col_1 boolean DEFAULT false NOT NULL
 );
 
+-- default constraint expression
+CREATE TABLE with_constraints3 (
+    col_1 int DEFAULT (1 + 2) * (3 + 4) NOT NULL
+);
+CREATE TABLE with_constraints33 (
+    col_1 int DEFAULT 1 + 2 * 3 + 4 NOT NULL
+);
+CREATE TABLE with_constraints4 (
+    col_1 int DEFAULT (1 + 2 * 3 + 4) NOT NULL
+);
+CREATE TABLE with_constraints5 (
+    col_1 bool DEFAULT (1 NOT IN (3, 4)) NOT NULL
+);
+CREATE TABLE with_constraints6 (
+    col_1 bool NOT NULL DEFAULT (5 NOT IN (5, 6))
+);
 
 CREATE TABLE test_with_storage_param (
     col_1 boolean
@@ -257,3 +281,61 @@ CREATE TABLE test_with_storage_param (
 CREATE TABLE test_with_storage_params (
     col_1 boolean
 ) WITH (autovacuum_enabled=true, vacuum_truncate=false);
+
+CREATE TABLE tbl (
+    -- All forms of character data types listed at:
+    -- https://www.postgresql.org/docs/current/datatype-character.html
+    col_char_varying_unlimited character varying,
+    col_char_varying_limited character varying(50),
+    col_varchar_unlimited varchar,
+    col_varchar_limited varchar(50),
+
+    col_character_default character,
+    col_character_specified character(50),
+    col_char_default char,
+    col_char_specified character(50),
+
+    col_text text,
+
+    -- some types you'll find in pg_catalog
+    col_system_char "char", -- this is NOT the same as unquoted char
+    col_name name
+);
+
+-- Test out EXCLUDE constraints, as well as other more advanced index parameters on constraints
+
+-- from https://www.postgresql.org/docs/15/rangetypes.html: basic usage
+CREATE TABLE reservation (
+    during tsrange,
+    EXCLUDE USING gist (during WITH &&)
+);
+CREATE TABLE room_reservation (
+    room text,
+    during tsrange,
+    EXCLUDE USING gist (room WITH =, during WITH &&)
+);
+
+-- all the gnarly options: not every option is valid, but this will parse successfully on PG 15.
+CREATE TABLE no_using (
+    field text,
+    EXCLUDE (field WITH =) NOT DEFERRABLE INITIALLY IMMEDIATE NO INHERIT
+);
+CREATE TABLE many_options (
+    field text,
+    EXCLUDE USING gist (
+        one WITH =,
+        nulls_opclass nulls WITH =,
+        nulls_last NULLS LAST WITH =,
+        two COLLATE "en-US" opclass
+            (opt1, opt2=5, opt3='str', ns.opt4, ns.opt5=6, ns.opt6='str', opt7=ASC)
+            ASC NULLS FIRST WITH =,
+        (two + 5) WITH =,
+        myfunc(a, b) WITH =,
+        myfunc_opclass(a, b) fop (opt=1, foo=2) WITH =,
+        only_opclass opclass WITH =,
+        desc_order DESC WITH =
+    ) INCLUDE (a, b) WITH (idx_num = 5, idx_str = 'idx_value', idx_kw=DESC)
+        USING INDEX TABLESPACE tblspc
+        WHERE (field != 'def')
+        DEFERRABLE INITIALLY DEFERRED
+);
