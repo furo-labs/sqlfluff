@@ -35,13 +35,13 @@ redshift_dialect = postgres_dialect.copy_as("redshift")
 
 # Set Keywords
 redshift_dialect.sets("unreserved_keywords").clear()
-redshift_dialect.sets("unreserved_keywords").update(
-    [n.strip().upper() for n in redshift_unreserved_keywords.split("\n")]
+redshift_dialect.update_keywords_set_from_multiline_string(
+    "unreserved_keywords", redshift_unreserved_keywords
 )
 
 redshift_dialect.sets("reserved_keywords").clear()
-redshift_dialect.sets("reserved_keywords").update(
-    [n.strip().upper() for n in redshift_reserved_keywords.split("\n")]
+redshift_dialect.update_keywords_set_from_multiline_string(
+    "reserved_keywords", redshift_reserved_keywords
 )
 
 redshift_dialect.sets("bare_functions").clear()
@@ -1495,7 +1495,7 @@ class CreateSchemaStatementSegment(BaseSegment):
     """A `CREATE SCHEMA` statement.
 
     https://docs.aws.amazon.com/redshift/latest/dg/r_CREATE_SCHEMA.html
-    TODO: support optional SCHEMA_ELEMENT
+    TODO: support optional SCHEMA_ELEMENT (should mostly be provided by ansi)
     """
 
     type = "create_schema_statement"
@@ -1508,13 +1508,13 @@ class CreateSchemaStatementSegment(BaseSegment):
                 Ref("SchemaReferenceSegment"),
                 Sequence(
                     "AUTHORIZATION",
-                    Ref("ObjectReferenceSegment"),
+                    Ref("RoleReferenceSegment"),
                     optional=True,
                 ),
             ),
             Sequence(
                 "AUTHORIZATION",
-                Ref("ObjectReferenceSegment"),
+                Ref("RoleReferenceSegment"),
             ),
         ),
         Ref("QuotaGrammar", optional=True),
@@ -1952,13 +1952,12 @@ class AnalyzeCompressionStatementSegment(BaseSegment):
     )
 
 
-class VacuumStatementSegment(BaseSegment):
+class VacuumStatementSegment(postgres.VacuumStatementSegment):
     """A `VACUUM` statement.
 
     https://docs.aws.amazon.com/redshift/latest/dg/r_VACUUM_command.html
     """
 
-    type = "vacuum_statement"
     match_grammar = Sequence(
         "VACUUM",
         OneOf(
@@ -2014,7 +2013,6 @@ class StatementSegment(postgres.StatementSegment):
             Ref("FetchStatementSegment"),
             Ref("CloseStatementSegment"),
             Ref("AnalyzeCompressionStatementSegment"),
-            Ref("VacuumStatementSegment"),
             Ref("AlterProcedureStatementSegment"),
             Ref("CallStatementSegment"),
             Ref("CreateRlsPolicyStatementSegment"),

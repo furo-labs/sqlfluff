@@ -262,12 +262,11 @@ ansi_dialect.sets("datetime_units").update(
 ansi_dialect.sets("date_part_function_name").update(["DATEADD"])
 
 # Set Keywords
-ansi_dialect.sets("unreserved_keywords").update(
-    [n.strip().upper() for n in ansi_unreserved_keywords.split("\n")]
+ansi_dialect.update_keywords_set_from_multiline_string(
+    "unreserved_keywords", ansi_unreserved_keywords
 )
-
-ansi_dialect.sets("reserved_keywords").update(
-    [n.strip().upper() for n in ansi_reserved_keywords.split("\n")]
+ansi_dialect.update_keywords_set_from_multiline_string(
+    "reserved_keywords", ansi_reserved_keywords
 )
 
 # Bracket pairs (a set of tuples).
@@ -360,12 +359,15 @@ ansi_dialect.add(
     # Maybe data types should be more restrictive?
     DatatypeIdentifierSegment=SegmentGenerator(
         # Generate the anti template from the set of reserved keywords
-        lambda dialect: RegexParser(
-            r"[A-Z][A-Z0-9_]*",
-            CodeSegment,
-            type="data_type_identifier",
-            anti_template=r"^(NOT)$",
-            # TODO - this is a stopgap until we implement explicit data types
+        lambda dialect: OneOf(
+            RegexParser(
+                r"[A-Z][A-Z0-9_]*",
+                CodeSegment,
+                type="data_type_identifier",
+                anti_template=r"^(NOT)$",
+                # TODO - this is a stopgap until we implement explicit data types
+            ),
+            Ref("SingleIdentifierGrammar", exclude=Ref("NakedIdentifierSegment")),
         ),
     ),
     # Ansi Intervals
@@ -419,9 +421,7 @@ ansi_dialect.add(
         Ref("BitwiseLShiftSegment"),
         Ref("BitwiseRShiftSegment"),
     ),
-    SignedSegmentGrammar=AnyNumberOf(
-        Ref("PositiveSegment"), Ref("NegativeSegment"), min_times=1
-    ),
+    SignedSegmentGrammar=OneOf(Ref("PositiveSegment"), Ref("NegativeSegment")),
     StringBinaryOperatorGrammar=OneOf(Ref("ConcatSegment")),
     BooleanBinaryOperatorGrammar=OneOf(
         Ref("AndOperatorGrammar"), Ref("OrOperatorGrammar")
@@ -1069,6 +1069,12 @@ class IndexReferenceSegment(ObjectReferenceSegment):
     type = "index_reference"
 
 
+class CollationReferenceSegment(ObjectReferenceSegment):
+    """A reference to a collation."""
+
+    type = "collation_reference"
+
+
 class RoleReferenceSegment(ObjectReferenceSegment):
     """A reference to a role, user, or account."""
 
@@ -1158,6 +1164,7 @@ class AliasExpressionSegment(BaseSegment):
 
     type = "alias_expression"
     match_grammar: Matchable = Sequence(
+        Indent,
         Ref.keyword("AS", optional=True),
         OneOf(
             Sequence(
@@ -1167,6 +1174,7 @@ class AliasExpressionSegment(BaseSegment):
             ),
             Ref("SingleQuotedIdentifierSegment"),
         ),
+        Dedent,
     )
 
 
@@ -1191,7 +1199,7 @@ class ShorthandCastSegment(BaseSegment):
 
 
 class QualifiedNumericLiteralSegment(BaseSegment):
-    """A numeric literal with one or more + or - signs preceding.
+    """A numeric literal with one + or - sign preceding.
 
     The qualified numeric literal is a compound of a raw
     literal and a plus/minus sign. We do it this way rather
@@ -1275,6 +1283,7 @@ class OverClauseSegment(BaseSegment):
 
     type = "over_clause"
     match_grammar: Matchable = Sequence(
+        Indent,
         Sequence(OneOf("IGNORE", "RESPECT"), "NULLS", optional=True),
         "OVER",
         OneOf(
@@ -1283,6 +1292,7 @@ class OverClauseSegment(BaseSegment):
                 Ref("WindowSpecificationSegment", optional=True),
             ),
         ),
+        Dedent,
     )
 
 
@@ -1904,40 +1914,63 @@ class CaseExpressionSegment(BaseSegment):
 ansi_dialect.add(
     # Expression_A_Grammar
     # https://www.cockroachlabs.com/docs/v20.2/sql-grammar.html#a_expr
-    Expression_A_Grammar=Sequence(
-        OneOf(
-            Ref("Expression_C_Grammar"),
-            Sequence(
-                OneOf(
-                    Ref("SignedSegmentGrammar"),
-                    # Ref('TildeSegment'),
-                    Ref("NotOperatorGrammar"),
-                    "PRIOR",
-                    # used in CONNECT BY clauses (EXASOL, Snowflake, Postgres...)
-                ),
-                Ref("Expression_C_Grammar"),
-            ),
+    # The upstream grammar is defined recursively, which if implemented naively
+    # will cause SQLFluff to overflow the stack from recursive function calls.
+    # To work around this, the a_expr grammar is reworked a bit into sub-grammars
+    # that effectively provide tail recursion.
+    Expression_A_Unary_Operator_Grammar=OneOf(
+        # This grammar corresponds to the unary operator portion of the initial
+        # recursive block on the Cockroach Labs a_expr grammar.  It includes the
+        # unary operator matching sub-block, but not the recursive call to a_expr.
+        Ref(
+            "SignedSegmentGrammar",
+            exclude=Sequence(Ref("QualifiedNumericLiteralSegment")),
         ),
+        Ref("TildeSegment"),
+        Ref("NotOperatorGrammar"),
+        # used in CONNECT BY clauses (EXASOL, Snowflake, Postgres...)
+        "PRIOR",
+    ),
+    Tail_Recurse_Expression_A_Grammar=Sequence(
+        # This should be used instead of a recursive call to Expression_A_Grammar
+        # whenever the repeating element in Expression_A_Grammar makes a recursive
+        # call to itself at the _end_.  If it's in the middle then you still need
+        # to recurse into Expression_A_Grammar normally.
+        AnyNumberOf(Ref("Expression_A_Unary_Operator_Grammar")),
+        Ref("Expression_C_Grammar"),
+    ),
+    Expression_A_Grammar=Sequence(
+        # Grammar always starts with optional unary operator, plus c_expr.  This
+        # section must always match the tail recurse grammar.
+        Ref("Tail_Recurse_Expression_A_Grammar"),
+        # As originally pictured in the diagram, the grammar then repeats itself
+        # for any number of times with a loop.
         AnyNumberOf(
             OneOf(
+                # This corresponds to the big repeating block in the diagram that
+                # has like dozens and dozens of possibilities.  Some of them are
+                # recursive.  If the item __ends__ with a recursive call to "a_expr",
+                # use Ref("Tail_Recurse_Expression_A_Grammar") instead so that the
+                # stack depth can be minimized.  If the item has a recursive call
+                # in the middle of the expression, you'll need to recurse
+                # Expression_A_Grammar normally.
+                #
+                # We need to add a lot more here...
                 Sequence(
-                    OneOf(
-                        Sequence(
-                            Ref.keyword("NOT", optional=True),
-                            Ref("LikeGrammar"),
-                        ),
-                        Sequence(
-                            Ref("BinaryOperatorGrammar"),
-                            Ref.keyword("NOT", optional=True),
-                        ),
-                        # We need to add a lot more here...
+                    Sequence(
+                        Ref.keyword("NOT", optional=True),
+                        Ref("LikeGrammar"),
                     ),
-                    Ref("Expression_C_Grammar"),
+                    Ref("Expression_A_Grammar"),
                     Sequence(
                         Ref.keyword("ESCAPE"),
-                        Ref("Expression_C_Grammar"),
+                        Ref("Tail_Recurse_Expression_A_Grammar"),
                         optional=True,
                     ),
+                ),
+                Sequence(
+                    Ref("BinaryOperatorGrammar"),
+                    Ref("Tail_Recurse_Expression_A_Grammar"),
                 ),
                 Sequence(
                     Ref.keyword("NOT", optional=True),
@@ -1966,17 +1999,11 @@ ansi_dialect.add(
                 Ref("NotNullGrammar"),
                 Ref("CollateGrammar"),
                 Sequence(
-                    # e.g. NOT EXISTS, but other expressions could be met as
-                    # well by inverting the condition with the NOT operator
-                    "NOT",
-                    Ref("Expression_C_Grammar"),
-                ),
-                Sequence(
                     Ref.keyword("NOT", optional=True),
                     "BETWEEN",
                     Ref("Expression_B_Grammar"),
                     "AND",
-                    Ref("Expression_A_Grammar"),
+                    Ref("Tail_Recurse_Expression_A_Grammar"),
                 ),
             )
         ),
@@ -1984,22 +2011,37 @@ ansi_dialect.add(
     # Expression_B_Grammar: Does not directly feed into Expression_A_Grammar
     # but is used for a BETWEEN statement within Expression_A_Grammar.
     # https://www.cockroachlabs.com/docs/v20.2/sql-grammar.htm#b_expr
-    Expression_B_Grammar=Sequence(
-        OneOf(
-            Ref("Expression_C_Grammar"),
-            Sequence(
-                Ref("SignedSegmentGrammar"),
-                Ref("Expression_B_Grammar"),
-            ),
+    #
+    # We use a similar trick as seen with Expression_A_Grammar to avoid recursion
+    # by using a tail recursion grammar.  See the comments for a_expr to see how
+    # that works.
+    Expression_B_Unary_Operator_Grammar=OneOf(
+        Ref(
+            "SignedSegmentGrammar",
+            exclude=Sequence(Ref("QualifiedNumericLiteralSegment")),
         ),
+        Ref("TildeSegment"),
+    ),
+    Tail_Recurse_Expression_B_Grammar=Sequence(
+        # Only safe to use if the recursive call is at the END of the repeating
+        # element in the main b_expr portion
+        AnyNumberOf(Ref("Expression_B_Unary_Operator_Grammar")),
+        Ref("Expression_C_Grammar"),
+    ),
+    Expression_B_Grammar=Sequence(
+        # Always start with tail recursion element!
+        Ref("Tail_Recurse_Expression_B_Grammar"),
         AnyNumberOf(
-            Sequence(
-                OneOf(
-                    Ref("ArithmeticBinaryOperatorGrammar"),
-                    Ref("StringBinaryOperatorGrammar"),
-                    Ref("ComparisonOperatorGrammar"),
+            OneOf(
+                Sequence(
+                    OneOf(
+                        Ref("ArithmeticBinaryOperatorGrammar"),
+                        Ref("StringBinaryOperatorGrammar"),
+                        Ref("ComparisonOperatorGrammar"),
+                    ),
+                    Ref("Tail_Recurse_Expression_B_Grammar"),
                 ),
-                Ref("Expression_C_Grammar"),
+                # TODO: Add more things from b_expr here
             ),
         ),
     ),
@@ -3119,11 +3161,10 @@ class DropIndexStatementSegment(BaseSegment):
     """A `DROP INDEX` statement."""
 
     type = "drop_index_statement"
-    # DROP INDEX <Index name> [CONCURRENTLY] [IF EXISTS] {RESTRICT | CASCADE}
+    # DROP INDEX <Index name> [IF EXISTS] {RESTRICT | CASCADE}
     match_grammar: Matchable = Sequence(
         "DROP",
         "INDEX",
-        Ref.keyword("CONCURRENTLY", optional=True),
         Ref("IfExistsGrammar", optional=True),
         Ref("IndexReferenceSegment"),
         Ref("DropBehaviorGrammar", optional=True),
@@ -3440,6 +3481,60 @@ class SetClauseSegment(BaseSegment):
     )
 
 
+class CreateCastStatementSegment(BaseSegment):
+    """A `CREATE CAST` statement.
+
+    https://jakewheat.github.io/sql-overview/sql-2016-foundation-grammar.html#_11_63_user_defined_cast_definition
+    """
+
+    type = "create_cast_statement"
+
+    match_grammar: Matchable = Sequence(
+        "CREATE",
+        "CAST",
+        Bracketed(
+            Ref("DatatypeSegment"),
+            "AS",
+            Ref("DatatypeSegment"),
+        ),
+        "WITH",
+        Ref.keyword("SPECIFIC", optional=True),
+        OneOf(
+            "ROUTINE",
+            "FUNCTION",
+            "PROCEDURE",
+            Sequence(
+                OneOf("INSTANCE", "STATIC", "CONSTRUCTOR", optional=True),
+                "METHOD",
+            ),
+        ),
+        Ref("FunctionNameSegment"),
+        Ref("FunctionParameterListGrammar", optional=True),
+        Sequence("FOR", Ref("ObjectReferenceSegment"), optional=True),
+        Sequence("AS", "ASSIGNMENT", optional=True),
+    )
+
+
+class DropCastStatementSegment(BaseSegment):
+    """A `DROP CAST` statement.
+
+    https://jakewheat.github.io/sql-overview/sql-2016-foundation-grammar.html#_11_64_drop_user_defined_cast_statement
+    """
+
+    type = "drop_cast_statement"
+
+    match_grammar: Matchable = Sequence(
+        "DROP",
+        "CAST",
+        Bracketed(
+            Ref("DatatypeSegment"),
+            "AS",
+            Ref("DatatypeSegment"),
+        ),
+        Ref("DropBehaviorGrammar", optional=True),
+    )
+
+
 class FunctionDefinitionGrammar(BaseSegment):
     """This is the body of a `CREATE FUNCTION AS` statement."""
 
@@ -3661,6 +3756,8 @@ class StatementSegment(BaseSegment):
         Ref("CreateViewStatementSegment"),
         Ref("DeleteStatementSegment"),
         Ref("UpdateStatementSegment"),
+        Ref("CreateCastStatementSegment"),
+        Ref("DropCastStatementSegment"),
         Ref("CreateFunctionStatementSegment"),
         Ref("DropFunctionStatementSegment"),
         Ref("CreateModelStatementSegment"),
